@@ -1335,6 +1335,7 @@ name = "hash-gui"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "iced",
  "sha2",
  "tokio",

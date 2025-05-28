@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use hash_gui::prelude::*;
 use iced::futures::{SinkExt, Stream};
 use iced::widget::{
@@ -253,21 +254,6 @@ impl App {
                 .into(),
             );
 
-            let progress = match &data.state {
-                FileEntryState::Idle => "",
-                FileEntryState::Calculating { progress } => &format!("{:.0}%", progress),
-                FileEntryState::Finished { .. } => "100%",
-            };
-            children.push(
-                row([
-                    text("progress: ").into(),
-                    text_input("", progress)
-                        .size(12)
-                        .style(Self::selectable_text_style)
-                        .into(),
-                ])
-                .into(),
-            );
             children.push(
                 row([
                     text("SHA256: ").into(),
@@ -307,76 +293,105 @@ impl App {
 
     fn hash(entry: FileEntry) -> impl Stream<Item = Result<FileEntry, ()>> {
         iced::stream::try_channel(3, async move |mut output| {
-            let output_inner = output.clone();
-            let entry_inner = entry.clone();
-            let hash = tokio::task::spawn_blocking(move || {
-                let mut output = output_inner;
-                let entry = entry_inner;
-                let mut buf = [0u8; 8 * 1024];
-                let mut reader =
-                    BufReader::new(std::fs::File::open(&entry.pathname).expect("pathname.open"));
-
-                let metadata =
-                    std::fs::symlink_metadata(&entry.pathname).expect("pathname.symlink_metadata");
-                let mut remain = metadata.len();
-                let mut sum = 0u64;
-
-                let mut hasher = Sha256::new();
-
-                let mut progress = 0f32;
-
-                match output.try_send(FileEntry {
-                    pathname: entry.pathname.clone(),
-                    state: FileEntryState::Calculating { progress },
-                }) {
-                    Err(e) if e.is_disconnected() => {
-                        info!(?e, "disconnected (1st)");
+            let mut reader = BufReader::with_capacity(
+                8 * 1024 * 1024,
+                match std::fs::File::open(&entry.pathname) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        warn!(?e);
                         return Err(());
                     }
-                    Ok(_) | Err(_) => {}
+                },
+            );
+            let filesize = match std::fs::symlink_metadata(&entry.pathname) {
+                Ok(data) => data.len(),
+                Err(e) => {
+                    warn!(?e, "metadata");
+                    return Err(());
                 }
+            };
+
+            let (tx, rx) = std::sync::mpsc::sync_channel(10);
+
+            if output
+                .send(FileEntry {
+                    pathname: entry.pathname.clone(),
+                    state: FileEntryState::Calculating { progress: 0.0 },
+                })
+                .await
+                .is_err()
+            {
+                info!("disconnected");
+                return Err(());
+            }
+
+            let read_span = info_span!("read", pathname = entry.pathname.display().to_string());
+
+            tokio::task::spawn_blocking(move || {
+                let _guard = read_span.enter();
+
+                let mut remain = filesize;
 
                 while 0 < remain {
-                    let read_size = (buf.len() as u64).min(remain) as usize;
-                    reader
-                        .read_exact(&mut buf[..read_size])
-                        .expect("reader.read_exact");
+                    let read_size = (1024 * 1024).min(remain) as usize;
+                    let mut buf = BytesMut::with_capacity(read_size);
+                    unsafe {
+                        buf.set_len(read_size);
+                    }
+                    if let Err(e) = reader.read_exact(&mut buf) {
+                        warn!(?e, "read");
+                        return;
+                    }
 
-                    Digest::update(&mut hasher, &buf[..read_size]);
-
-                    remain -= read_size as u64;
-                    sum += read_size as u64;
-
-                    let new_progress = (sum as f32) / (metadata.len() as f32) * 100.0;
-                    if progress < new_progress {
-                        progress = new_progress;
-                        match output.try_send(FileEntry {
-                            pathname: entry.pathname.clone(),
-                            state: FileEntryState::Calculating { progress },
-                        }) {
-                            Err(e) if e.is_disconnected() => {
-                                info!(?e, "disconnected (2nd)");
-                                return Err(());
-                            }
-                            Ok(_) | Err(_) => {}
-                        }
+                    remain -= buf.len() as u64;
+                    if let Err(e) = tx.send(buf.freeze()) {
+                        info!(?e, "disconnected");
+                        return;
                     }
                 }
 
-                Ok(format!("{:x}", hasher.finalize()))
-            })
-            .await
-            .expect("spawn_blocking");
+                info!("finish");
+            });
 
-            if let Ok(hash) = hash {
-                output
-                    .send(FileEntry {
+            let hash_span = info_span!("read", pathname = entry.pathname.display().to_string());
+
+            tokio::task::spawn_blocking(move || {
+                let _guard = hash_span.enter();
+
+                let mut hasher = Sha256::new();
+                let mut sum = 0u64;
+
+                for data in rx {
+                    Digest::update(&mut hasher, &data);
+
+                    sum += data.len() as u64;
+
+                    match output.try_send(FileEntry {
                         pathname: entry.pathname.clone(),
-                        state: FileEntryState::Finished { hash },
+                        state: FileEntryState::Calculating {
+                            progress: ((sum as f64) / (filesize as f64) * 100.0) as f32,
+                        },
+                    }) {
+                        Err(e) if e.is_disconnected() => {
+                            info!("disconnected");
+                            return;
+                        }
+                        Ok(_) | Err(_) => {}
+                    }
+                }
+
+                output
+                    .try_send(FileEntry {
+                        pathname: entry.pathname.clone(),
+                        state: FileEntryState::Finished {
+                            hash: format!("{:x}", hasher.finalize()),
+                        },
                     })
-                    .await
                     .ok();
-            }
+
+                info!("finish");
+            });
+
             Ok(())
         })
     }
