@@ -24,6 +24,7 @@ jobs:
           if-no-files-found: error
   build:
     strategy:
+      max-parallel: 2
       matrix:
         os:
           - ubuntu-latest
@@ -33,6 +34,7 @@ jobs:
       - name: Get OS name
         id: os-name
         run: echo "OS_NAME=$(echo ${{ matrix.os }} | sed 's/-latest//')" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
       - run: rustup component add clippy
       - run: cargo build --profile release-opt
       - run: cargo clippy
