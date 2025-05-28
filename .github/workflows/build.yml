@@ -8,41 +8,45 @@ on:
     branches:
       - master
 jobs:
-  build-windows:
+  build:
+    strategy:
+      max-parallel: 3
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
     # https://github.com/actions/virtual-environments#available-environments
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup component add clippy
       - run: cargo build --profile release-opt
       - run: cargo clippy
       - run: cargo test
-      - uses: actions/upload-artifact@v4
+      - if: ${{ matrix.os == 'macos-latest' }}
+        name: Create .app
+        run: |
+          mkdir -p target/release-opt/app/HashGUI.app/Contents/MacOS
+          cp target/release-opt/hash-gui target/release-opt/app/HashGUI.app/Contents/MacOS
+          cp assets/Info.plist target/release-opt/app/HashGUI.app/Contents
+      - if: ${{ matrix.os == 'windows-latest' }}
+        uses: actions/upload-artifact@v4
         with:
           name: hash-gui-win
           path: target/release-opt/hash-gui.exe
           if-no-files-found: error
-  build:
-    strategy:
-      max-parallel: 2
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Get OS name
-        id: os-name
-        run: echo "OS_NAME=$(echo ${{ matrix.os }} | sed 's/-latest//')" >> $GITHUB_OUTPUT
-      - uses: actions/checkout@v4
-      - run: rustup component add clippy
-      - run: cargo build --profile release-opt
-      - run: cargo clippy
-      - run: cargo test
-      - uses: actions/upload-artifact@v4
+      - if: ${{ matrix.os == 'ubuntu-latest' }}
+        uses: actions/upload-artifact@v4
         with:
-          name: hash-gui-${{ steps.os-name.outputs.OS_NAME }}
+          name: hash-gui-ubuntu
           path: target/release-opt/hash-gui
+          if-no-files-found: error
+      - if: ${{ matrix.os == 'macos-latest' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hash-gui-macos
+          path: target/release-opt/app
           if-no-files-found: error
   rustfmt:
     runs-on: ubuntu-latest
