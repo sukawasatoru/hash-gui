@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use bytes::BytesMut;
 use hash_gui::prelude::*;
 use iced::futures::{SinkExt, Stream};
