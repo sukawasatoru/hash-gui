@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "=1.0.98"
-bytes = "=1.10.1"
+bytes = "=1.11.1"
 iced = { version = "=0.13.1", features = ["auto-detect-theme", "tokio"] }
 sha2 = "=0.10.9"
 tokio = { version = "=1.45.1", features = ["rt-multi-thread"] }
