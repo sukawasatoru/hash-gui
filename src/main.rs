@@ -211,7 +211,7 @@ impl App {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         if self.file_entries.is_empty() {
             return container(column([
                 row([
